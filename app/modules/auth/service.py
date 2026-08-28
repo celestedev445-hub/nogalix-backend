@@ -238,7 +238,7 @@ def forgot_password(db: Session, *, email: str) -> dict:
 
     sent = send_html_mail(
         to_email=user.email,
-        subject=f"Réinitialisation de mot de passe — {settings.app_name}",
+        subject=f"Réinitialisation de mot de passe pour {settings.app_name}",
         html_body=reset_password_email_html(user_name=user.name, reset_code=reset_code),
     )
     if not sent and settings.app_debug:

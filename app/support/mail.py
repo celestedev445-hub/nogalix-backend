@@ -48,7 +48,7 @@ def reset_password_email_html(*, user_name: str, reset_code: str) -> str:
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Réinitialisation de mot de passe — {app}</title>
+  <title>Réinitialisation de mot de passe pour {app}</title>
 </head>
 <body style="margin:0;padding:30px 10px;font-family:Arial,sans-serif;background:#EEF2FF;color:#0F172A;">
   <div style="max-width:600px;margin:0 auto;">

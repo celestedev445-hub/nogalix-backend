@@ -1,9 +1,13 @@
 from datetime import datetime, timezone
+import re
 from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.modules.cv.match_analyse import _cv_to_text, build_match_analysis
+from app.modules.cv.rewrite_analyse import _minimal_cv_from_text, build_rewrite_cv
+from app.modules.cv.analyse_schemas import CvMatchAnalyseRequest, CvRewriteAnalyseRequest
 from app.modules.cv.schemas import CvPayload, compute_completion
 from app.modules.users.models import CurriculumVitae, Notification, User
 
@@ -140,7 +144,7 @@ def delete_cv(db: Session, user: User, cv_id: str) -> dict:
     return {"message": "CV supprimé"}
 
 
-def analyze_cv(db: Session, user: User, cv_id: str) -> dict:
+def analyze_cv(db: Session, user: User, cv_id: str, job_offer: str = "") -> dict:
     row = (
         db.query(CurriculumVitae)
         .filter(CurriculumVitae.id == cv_id, CurriculumVitae.user_id == user.id)
@@ -155,6 +159,33 @@ def analyze_cv(db: Session, user: User, cv_id: str) -> dict:
     skills = payload.get("skills") or []
     education = payload.get("education") or []
     summary = (payload.get("summary") or "").strip()
+
+    def tokenize(text: str) -> list[str]:
+        words = re.findall(r"[a-z0-9+#.]{4,}", text.lower())
+        return list(dict.fromkeys(words))
+
+    job_tokens = tokenize(job_offer)[:16] if job_offer.strip() else []
+    cv_text = " ".join(
+        [
+            str(identity.get("firstName") or ""),
+            str(identity.get("title") or ""),
+            summary,
+            " ".join(str(skill.get("name") or "") for skill in skills),
+            " ".join(
+                " ".join(
+                    [
+                        str(item.get("title") or ""),
+                        str(item.get("company") or ""),
+                        " ".join(item.get("bullets") or []),
+                    ]
+                )
+                for item in experiences
+            ),
+        ]
+    )
+    cv_tokens = set(tokenize(cv_text))
+    keywords_found = [word for word in job_tokens if word in cv_tokens]
+    keywords_missing = [word for word in job_tokens if word not in cv_tokens][:8]
 
     categories = [
         {
@@ -239,6 +270,93 @@ def analyze_cv(db: Session, user: User, cv_id: str) -> dict:
         "label": label,
         "suggestions": suggestions,
         "categories": categories,
-        "summary": f"Votre CV obtient {score}/100 — {label.lower()}.",
+        "summary": f"Votre CV obtient {score}/100 : {label.lower()}.",
         "cvId": row.id,
+        "keywordsFound": keywords_found,
+        "keywordsMissing": keywords_missing,
     }
+
+
+async def match_analyse(db: Session, user: User, body: CvMatchAnalyseRequest) -> dict:
+    cv_label = body.fileName or "CV importé"
+    cv_text = (body.resumeText or "").strip()
+    cv_id = body.cvId
+
+    if cv_id:
+        row = (
+            db.query(CurriculumVitae)
+            .filter(CurriculumVitae.id == cv_id, CurriculumVitae.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail={"message": "CV introuvable."})
+        payload = row.payload or {}
+        cv_label = row.title or cv_label
+        cv_text = _cv_to_text(payload)
+
+    if len(cv_text) < 40:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Le CV ne contient pas assez d'informations pour une comparaison fiable."},
+        )
+
+    result = await build_match_analysis(
+        cv_label=cv_label,
+        cv_text=cv_text,
+        job_offer=body.jobOffer.strip(),
+        cv_id=cv_id,
+    )
+
+    db.add(
+        Notification(
+            user_id=user.id,
+            type="analyse",
+            kind="analyse",
+            message=(
+                f"Comparaison CV / offre : {result.get('verdictLabel', 'Analyse')} "
+                f"({result.get('matchScore', 0)}/100)."
+            ),
+            href="/analyse",
+            actor="Nogalix",
+        )
+    )
+    db.commit()
+    return result
+
+
+async def rewrite_from_analyse(db: Session, user: User, body: CvRewriteAnalyseRequest) -> dict:
+    cv_source: dict = {}
+    cv_text = (body.resumeText or "").strip()
+    job_title = body.jobTitle or ""
+
+    if body.cvId:
+        row = (
+            db.query(CurriculumVitae)
+            .filter(CurriculumVitae.id == body.cvId, CurriculumVitae.user_id == user.id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail={"message": "CV introuvable."})
+        cv_source = dict(row.payload or {})
+        cv_text = _cv_to_text(cv_source)
+
+    if not cv_source and cv_text:
+        cv_source = _minimal_cv_from_text(cv_text, body.fileName or "CV importé")
+
+    if not cv_text or len(cv_text) < 40:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Le CV ne contient pas assez d'informations pour une réécriture fiable."},
+        )
+
+    actions = [{"title": a.title, "detail": a.detail} for a in body.actions]
+    result = await build_rewrite_cv(
+        cv=cv_source,
+        cv_text=cv_text,
+        job_offer=body.jobOffer.strip(),
+        template_id=body.templateId,
+        actions=actions,
+        job_title=job_title or None,
+        file_name=body.fileName or "CV importé",
+    )
+    return result

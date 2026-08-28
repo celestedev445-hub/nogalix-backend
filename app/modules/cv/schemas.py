@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -81,6 +81,14 @@ class InterestItem(BaseModel):
     name: str = ""
 
 
+class CvImportSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    fileName: str = ""
+    mimeType: str = ""
+    dataUrl: str = ""
+
+
 class CvPayload(BaseModel):
     """Matches frontend CvData — templates stay on frontend via templateId."""
 
@@ -90,6 +98,7 @@ class CvPayload(BaseModel):
     templateId: str = "atlas"
     title: str = "Mon CV"
     principal: Optional[bool] = False
+    editorStatus: Literal["draft", "ready"] = "draft"
     updatedAt: Optional[str] = None
     completion: int = 0
     identity: CvIdentity = Field(default_factory=CvIdentity)
@@ -101,6 +110,7 @@ class CvPayload(BaseModel):
     projects: list[ProjectItem] = Field(default_factory=list)
     certifications: list[CertificationItem] = Field(default_factory=list)
     interests: Optional[list[InterestItem]] = None
+    importSource: Optional[CvImportSource] = None
 
 
 def compute_completion(payload: dict[str, Any]) -> int:

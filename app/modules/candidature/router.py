@@ -228,9 +228,9 @@ def _local_checklist(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
             "id": "summary",
             "label": "Accroche ciblée",
             "ok": len(summary) >= 80,
-            "detail": "Rédigez une accroche de 3–4 lignes qui cite le poste et 2 compétences clés."
+            "detail": "Rédigez une accroche de 3 à 4 lignes qui cite le poste et 2 compétences clés."
             if len(summary) < 80
-            else "Accroche présente — reformulez-la pour mentionner le poste.",
+            else "Accroche présente. Reformulez-la pour mentionner le poste.",
         }
     )
     exps = cv.get("experiences") or []
@@ -242,7 +242,7 @@ def _local_checklist(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
             "id": "impact",
             "label": "Résultats chiffrés",
             "ok": quantified,
-            "detail": "Ajoutez 1–2 résultats mesurables (%, délais, volume) dans vos expériences."
+            "detail": "Ajoutez 1 à 2 résultats mesurables (%, délais, volume) dans vos expériences."
             if not quantified
             else "Bon : des résultats mesurables sont déjà présents.",
         }
@@ -287,7 +287,7 @@ def _local_letter(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
         f"Cordialement,\n{name}"
     )
     return {
-        "title": f"Lettre — {title}",
+        "title": f"Lettre · {title}",
         "body": body,
     }
 
@@ -337,7 +337,7 @@ def _local_cv_variant(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
                 item["bullets"] = bullets
         experiences.append(item)
 
-    title = f"CV — {job_title}"[:120]
+    title = f"CV · {job_title}"[:120]
     return {
         "templateId": cv.get("templateId") or "atlas",
         "title": title,

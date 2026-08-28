@@ -453,7 +453,7 @@ async def audio(
     )
     reply = (
         f"J'ai bien reçu votre message vocal. "
-        f"La transcription automatique arrive bientôt — en attendant, "
+        f"La transcription automatique arrive bientôt. En attendant, "
         f"vous pouvez écrire votre demande dans le chat."
     )
     return {
