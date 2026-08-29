@@ -1,60 +1,47 @@
-import io
-
-from docx import Document
-from docx.shared import Pt
-from pypdf import PdfReader
+import tempfile
+from pathlib import Path
 
 
 def _convert_with_pdf2docx(content: bytes) -> bytes:
+    """Convertit un PDF avec pdf2docx (moteur open source le plus proche d'iLovePDF).
+
+    iLovePDF n'est pas open source. pdf2docx (Artifex, MIT) fait le même travail :
+    PyMuPDF lit la page, des règles reconstruisent paragraphes / tableaux / images,
+    python-docx écrit un .docx éditable.
+    Les fichiers temporaires sont obligatoires : un BytesIO en sortie produit souvent
+    un document vide, puis un fallback texte qui casse la mise en page.
+    """
     from pdf2docx import Converter
 
-    pdf_stream = io.BytesIO(content)
-    docx_stream = io.BytesIO()
-    converter = Converter(stream=pdf_stream)
-    converter.convert(docx_stream)
-    converter.close()
-    result = docx_stream.getvalue()
-    if not result:
-        raise ValueError("La conversion PDF vers Word a échoué.")
-    return result
+    pdf_path = ""
+    docx_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as pdf_tmp:
+            pdf_tmp.write(content)
+            pdf_path = pdf_tmp.name
+        docx_path = str(Path(pdf_path).with_suffix(".docx"))
 
+        converter = Converter(pdf_path)
+        try:
+            converter.convert(docx_path, ignore_page_error=True)
+        finally:
+            converter.close()
 
-def _convert_with_plain_text(content: bytes) -> bytes:
-    reader = PdfReader(io.BytesIO(content))
-    if not reader.pages:
-        raise ValueError("Le PDF ne contient aucune page.")
-
-    doc = Document()
-    has_text = False
-
-    for index, page in enumerate(reader.pages):
-        text = page.extract_text() or ""
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if lines:
-            has_text = True
-
-        for line in lines:
-            paragraph = doc.add_paragraph(line)
-            paragraph.paragraph_format.space_after = Pt(4)
-
-        if index < len(reader.pages) - 1 and lines:
-            doc.add_page_break()
-
-    if not has_text:
-        raise ValueError(
-            "Ce PDF ne contient pas de texte sélectionnable. Importez un fichier Word (.docx)."
-        )
-
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    return buffer.getvalue()
+        result = Path(docx_path).read_bytes()
+        if not result:
+            raise ValueError("La conversion PDF vers Word a échoué.")
+        return result
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("Impossible de convertir ce PDF en Word.") from exc
+    finally:
+        for path in (pdf_path, docx_path):
+            if path:
+                Path(path).unlink(missing_ok=True)
 
 
 def convert_pdf_to_docx(content: bytes) -> bytes:
     if not content:
         raise ValueError("Fichier PDF vide.")
-
-    try:
-        return _convert_with_pdf2docx(content)
-    except Exception:
-        return _convert_with_plain_text(content)
+    return _convert_with_pdf2docx(content)

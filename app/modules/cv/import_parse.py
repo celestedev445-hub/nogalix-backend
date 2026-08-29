@@ -3,10 +3,12 @@ import re
 import secrets
 from typing import Any, Optional
 
-import httpx
+from app.core.ai import ai_json
+from app.modules.cv.cv_icons import ICON_LIST, resolve_icon
 
-from app.core.config import settings
-from app.modules.cv.match_analyse import _parse_json_object
+
+class ImportedCvAiError(Exception):
+    """Raised when Gemini cannot redistribute the imported CV into sections."""
 
 
 def _new_id(prefix: str) -> str:
@@ -34,6 +36,7 @@ SECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("projects", re.compile(r"^(projets?(?:\s+personnels?)?|projects?|portfolio|réalisations?|realisations?)\b", re.I)),
     ("certifications", re.compile(r"^(certifications?|certificats?|licences?|attestations?)\b", re.I)),
     ("interests", re.compile(r"^(centres?\s+d.intérêt|intérêts?|interets?|loisirs?|hobbys?|passions?)\b", re.I)),
+    ("references", re.compile(r"^(références?|references?|referees?|recommandations?)\b", re.I)),
 ]
 
 DATE_RANGE = re.compile(
@@ -124,6 +127,7 @@ def _split_sections(text: str) -> dict[str, list[str]]:
         "projects": [],
         "certifications": [],
         "interests": [],
+        "references": [],
     }
     current = "header"
     for raw_line in text.splitlines():
@@ -272,7 +276,7 @@ def _parse_skills(lines: list[str]) -> list[dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        skills.append({"id": _new_id("sk"), "name": name, "level": 70})
+        skills.append({"id": _new_id("sk"), "name": name, "level": 70, "icon": resolve_icon(name)})
         if len(skills) >= 20:
             break
     return skills
@@ -432,6 +436,49 @@ def _parse_experiences(lines: list[str]) -> list[dict[str, Any]]:
     return experiences[:12]
 
 
+def _ensure_section_ids(payload: dict[str, Any], *, cap_experience_bullets: bool = False) -> dict[str, Any]:
+    prefixes = {
+        "experiences": "exp",
+        "education": "ed",
+        "skills": "sk",
+        "languages": "lg",
+        "projects": "pr",
+        "certifications": "ce",
+        "interests": "in",
+        "references": "rf",
+    }
+    for key, prefix in prefixes.items():
+        items = list(payload.get(key) or [])
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            if not row.get("id"):
+                row["id"] = _new_id(prefix)
+            if key == "experiences":
+                bullets = [str(b).strip() for b in row.get("bullets") or [] if str(b).strip()]
+                row["bullets"] = bullets[:8] if cap_experience_bullets else bullets
+            if key in {"skills", "interests"}:
+                row["icon"] = resolve_icon(str(row.get("name") or ""), row.get("icon"))
+            normalized.append(row)
+        payload[key] = normalized
+    return payload
+
+
+def _fill_missing_contact(identity: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    result = dict(identity)
+    if not str(result.get("email") or "").strip():
+        email_match = EMAIL.search(raw_text)
+        if email_match:
+            result["email"] = email_match.group(0)
+    if not str(result.get("phone") or "").strip():
+        phones = _extract_phones(raw_text)
+        if phones:
+            result["phone"] = phones
+    return result
+
+
 def _sanitize_parsed_payload(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
     result = json.loads(json.dumps(payload))
     sections = _split_sections(raw_text)
@@ -440,40 +487,25 @@ def _sanitize_parsed_payload(payload: dict[str, Any], raw_text: str) -> dict[str
         raw_text,
         sections["header"],
     )
-
-    email_match = EMAIL.search(raw_text)
-    if email_match and not identity.get("email"):
-        identity["email"] = email_match.group(0)
+    identity = _fill_missing_contact(identity, raw_text)
 
     summary = (result.get("summary") or "").strip()
     if len(summary) > 700 and len(summary) > len(raw_text) * 0.45:
         result["summary"] = ""
 
-    for key in ("experiences", "education", "skills", "languages", "projects", "certifications", "interests"):
-        items = list(result.get(key) or [])
-        normalized: list[dict[str, Any]] = []
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            row = dict(item)
-            if not row.get("id"):
-                prefix = {
-                    "experiences": "exp",
-                    "education": "ed",
-                    "skills": "sk",
-                    "languages": "lg",
-                    "projects": "pr",
-                    "certifications": "ce",
-                    "interests": "in",
-                }.get(key, "it")
-                row["id"] = _new_id(prefix)
-            if key == "experiences":
-                row["bullets"] = [str(b).strip() for b in row.get("bullets") or [] if str(b).strip()][:8]
-            normalized.append(row)
-        result[key] = normalized
-
     result["identity"] = identity
-    return result
+    return _ensure_section_ids(result, cap_experience_bullets=True)
+
+
+def _finalize_ai_payload(payload: dict[str, Any], raw_text: str) -> dict[str, Any]:
+    """Keep Gemini's section mapping. Only add ids and missing contact fields."""
+    result = json.loads(json.dumps(payload))
+    identity = _fill_missing_contact(dict(result.get("identity") or {}), raw_text)
+    result["identity"] = identity
+    summary = (result.get("summary") or "").strip()
+    if len(summary) > 900 and len(summary) > len(raw_text) * 0.55:
+        result["summary"] = summary[:900]
+    return _ensure_section_ids(result, cap_experience_bullets=False)
 
 
 def local_parse_imported_cv(text: str, file_name: str = "") -> dict[str, Any]:
@@ -518,16 +550,17 @@ def local_parse_imported_cv(text: str, file_name: str = "") -> dict[str, Any]:
         "projects": [],
         "certifications": [],
         "interests": [],
+        "references": [],
     }
     return _sanitize_parsed_payload(payload, text)
 
 
 async def gemini_parse_imported_cv(text: str, file_name: str = "") -> Optional[dict[str, Any]]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
+    source = text.strip()
+    prompt = f"""Tu redistribues le texte COMPLET d'un CV dans les sections de l'éditeur Nogalix.
 
-    prompt = f"""Tu extrais un CV brut en JSON structuré pour l'éditeur Nogalix.
-Ta mission est de PLACER chaque information du document dans le bon champ, sans mélanger les sections.
+Mission unique : lire TOUTES les données ci-dessous et placer chaque information dans la bonne section.
+Tu ne résumes pas, tu ne filtres pas, tu ne réécris pas le parcours. Tu classes.
 
 Réponds UNIQUEMENT en JSON valide :
 {{
@@ -536,74 +569,62 @@ Réponds UNIQUEMENT en JSON valide :
   "summary": "",
   "experiences": [{{"id":"","title":"","company":"","location":"","start":"","end":"","current":false,"bullets":[]}}],
   "education": [{{"id":"","diploma":"","school":"","year":"","details":""}}],
-  "skills": [{{"id":"","name":"","level":70}}],
+  "skills": [{{"id":"","name":"","level":70,"icon":""}}],
   "languages": [{{"id":"","name":"","level":""}}],
-  "projects": [],
-  "certifications": [],
-  "interests": []
+  "projects": [{{"id":"","name":"","description":"","url":""}}],
+  "certifications": [{{"id":"","name":"","issuer":"","year":""}}],
+  "interests": [{{"id":"","name":"","icon":""}}],
+  "references": [{{"id":"","name":"","role":"","company":"","phone":"","email":""}}]
 }}
 
-Règles strictes :
-- Lis le texte ligne par ligne et respecte la structure du CV source.
-- Le champ summary contient uniquement le profil ou l'accroche (2 à 5 phrases max), jamais tout le CV.
-- Chaque expérience professionnelle va dans experiences avec titre, entreprise, dates et puces.
-- Chaque diplôme va dans education.
-- Les compétences techniques et savoir faire vont dans skills.
-- Les langues vont dans languages.
-- Sépare correctement prénom et nom dans identity.firstName / identity.lastName.
-- identity.title contient uniquement le titre professionnel ou l'intitulé de poste, jamais le nom de la personne.
-- identity.phone peut contenir plusieurs numéros séparés par " | " si le CV en liste plusieurs.
-- Ne confonds jamais le nom de la personne avec le titre professionnel.
-- Ne déplace pas une expérience dans summary ni une compétence dans experiences.
-- N'invente aucune information absente du texte source.
-- N'utilise aucun texte d'offre d'emploi : extrais uniquement le contenu du CV.
-- Français professionnel.
-- Ne jamais utiliser le tiret comme ponctuation dans les textes affichés.
+Où ranger chaque type d'information :
+- identity : prénom, nom, titre de poste, email, téléphone, ville, site, GitHub / LinkedIn.
+- summary : uniquement le profil, l'accroche ou l'objectif (quelques phrases). Jamais les expériences ni les diplômes.
+- experiences : CHAQUE poste, stage, alternance, freelance. Titre, entreprise, lieu, dates, et TOUTES les missions en bullets.
+- education : CHAQUE diplôme, formation, école, année, mentions / détails.
+- skills : CHAQUE compétence, outil, logiciel, techno, savoir-faire, une entrée par compétence. Pour chaque compétence, choisis l'icône Lucide la plus juste dans cette liste uniquement : {ICON_LIST}. Le champ icon contient ce nom (ex: code-2, database, palette). Si aucune icône ne correspond vraiment, laisse icon vide.
+- languages : CHAQUE langue avec son niveau.
+- projects : projets perso, portfolio, réalisations hors fiche de poste.
+- certifications : certifications, permis, attestations, licences.
+- interests : centres d'intérêt, loisirs, bénévolat non professionnel. Même règle d'icône Lucide que pour skills.
+- references : personnes de référence (nom, fonction, entreprise, téléphone, email). N'invente aucun contact.
+
+Règles :
+- Utilise 100% des informations utiles du texte. Si une ligne existe dans le CV, elle doit se retrouver dans une section.
+- Ne fusionne pas plusieurs postes ou diplômes.
+- Ne mets jamais une expérience dans summary, ni une compétence dans experiences.
+- Sépare prénom et nom. identity.title = intitulé de poste, jamais le nom.
+- identity.phone : plusieurs numéros séparés par " | ".
+- N'invente rien. N'omets rien d'utile.
+- Français professionnel. Pas de tiret comme ponctuation dans les textes affichés.
+- title du CV : prénom + nom, ou le nom du fichier si le nom est absent.
 
 Nom du fichier : {file_name or "CV importé"}
 
-Texte du CV :
-{text[:12000]}
+Texte intégral du CV à redistribuer :
+{source}
 """
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max(int(settings.gemini_max_output_tokens or 512), 3072),
-            "temperature": 0.2,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        parsed = _parse_json_object("\n".join(texts).strip())
-        if not parsed:
-            return None
-        return _sanitize_parsed_payload(parsed, text)
-    except Exception:
+    parsed = await ai_json(prompt, purpose="import")
+    if not parsed:
         return None
+    return _finalize_ai_payload(parsed, source)
 
 
-async def parse_imported_cv(text: str, file_name: str = "") -> dict[str, Any]:
+async def parse_imported_cv(
+    text: str,
+    file_name: str = "",
+    *,
+    require_ai: bool = False,
+) -> dict[str, Any]:
     ai = await gemini_parse_imported_cv(text, file_name)
     if ai:
         ai["templateId"] = "import-original"
         return {"payload": ai, "source": "ai"}
+    if require_ai:
+        raise ImportedCvAiError(
+            "L'IA n'a pas pu redistribuer le CV dans les sections. Réessayez dans un instant."
+        )
     payload = local_parse_imported_cv(text, file_name)
     return {"payload": payload, "source": "local"}
 

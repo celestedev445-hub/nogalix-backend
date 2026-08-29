@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import re
-import secrets
 from typing import Any, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
+from app.modules.candidature.generate import CandidatureAiError, write_deliverables
 from app.modules.plans.capability import allows, ensure_capability, get_user_plan
 from app.modules.users.models import CurriculumVitae, User
 
@@ -84,10 +81,6 @@ class GenerateRequest(BaseModel):
     outputs: list[str] = Field(default_factory=list, max_length=6)
     # optional client CV snapshot when local-only / not yet synced
     cv_snapshot: Optional[dict[str, Any]] = None
-
-
-def _new_id(prefix: str) -> str:
-    return f"{prefix}-{secrets.token_hex(4)}"
 
 
 def _tokenize(text: str) -> list[str]:
@@ -269,186 +262,6 @@ def _local_checklist(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _local_letter(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
-    identity = cv.get("identity") or {}
-    name = f"{identity.get('firstName') or ''} {identity.get('lastName') or ''}".strip() or "Candidat"
-    role = identity.get("title") or _extract_job_title(offer)
-    company = _extract_company(offer) or "votre entreprise"
-    title = _extract_job_title(offer)
-    missing = _tokenize(offer)
-    corpus = _cv_corpus(cv)
-    highlights = [w for w in missing if w in corpus][:4] or missing[:4]
-    skills_line = ", ".join(highlights) if highlights else "mes compétences clés"
-    body = (
-        f"Madame, Monsieur,\n\n"
-        f"Actuellement {role}, je souhaite rejoindre {company} pour le poste de {title}.\n\n"
-        f"Mon parcours m'a permis de développer {skills_line}, en lien direct avec votre annonce. "
-        f"Je serai ravi(e) d'échanger sur la manière dont je peux contribuer à vos objectifs.\n\n"
-        f"Cordialement,\n{name}"
-    )
-    return {
-        "title": f"Lettre · {title}",
-        "body": body,
-    }
-
-
-def _local_cv_variant(offer: str, cv: dict[str, Any]) -> dict[str, Any]:
-    job_title = _extract_job_title(offer)
-    company = _extract_company(offer)
-    tokens = _tokenize(offer)
-    corpus = _cv_corpus(cv)
-    missing = [w for w in tokens if w not in corpus][:8]
-    found = [w for w in tokens if w in corpus][:8]
-
-    identity = dict(cv.get("identity") or {})
-    if job_title and job_title != "Poste ciblé":
-        identity["title"] = job_title[:80]
-
-    base_summary = (cv.get("summary") or "").strip()
-    highlight = ", ".join(found[:4] or tokens[:4])
-    target = f"Poste visé : {job_title}" + (f" ({company})" if company else "") + "."
-    if base_summary:
-        summary = f"{base_summary.rstrip('.')}. {target} Compétences mises en avant : {highlight}."
-    else:
-        summary = (
-            f"Professionnel(le) motivé(e) pour le poste de {job_title}. "
-            f"Je mets en avant {highlight}."
-        )
-    if missing:
-        summary += f" Ouvert(e) à renforcer : {', '.join(missing[:4])}."
-
-    skills = list(cv.get("skills") or [])
-    existing_names = {str(s.get("name") or "").lower() for s in skills}
-    for word in missing[:5]:
-        label = word.replace(".", " ").strip().title()
-        if label.lower() in existing_names:
-            continue
-        skills.append({"id": _new_id("sk"), "name": label, "level": 65})
-        existing_names.add(label.lower())
-
-    experiences = []
-    for exp in cv.get("experiences") or []:
-        item = dict(exp)
-        bullets = list(item.get("bullets") or [])
-        if missing and bullets:
-            tip = missing[0].replace(".", " ")
-            if tip.lower() not in " ".join(bullets).lower():
-                bullets = bullets + [f"Exposition à {tip}, en lien avec le poste ciblé."]
-                item["bullets"] = bullets
-        experiences.append(item)
-
-    title = f"CV · {job_title}"[:120]
-    return {
-        "templateId": cv.get("templateId") or "atlas",
-        "title": title,
-        "principal": False,
-        "identity": identity,
-        "summary": summary[:1200],
-        "experiences": experiences,
-        "education": cv.get("education") or [],
-        "skills": skills,
-        "languages": cv.get("languages") or [],
-        "projects": cv.get("projects") or [],
-        "certifications": cv.get("certifications") or [],
-        "interests": cv.get("interests") or [],
-    }
-
-
-async def _gemini_generate(offer: str, cv: dict[str, Any], outputs: list[str]) -> Optional[dict[str, Any]]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
-
-    snapshot = json.dumps(
-        {
-            "title": cv.get("title"),
-            "summary": cv.get("summary"),
-            "identity": cv.get("identity"),
-            "experiences": (cv.get("experiences") or [])[:4],
-            "skills": (cv.get("skills") or [])[:12],
-            "education": (cv.get("education") or [])[:3],
-            "languages": cv.get("languages") or [],
-        },
-        ensure_ascii=False,
-    )[:7000]
-
-    prompt = f"""Tu prépares une candidature Nogalix à partir d'une offre d'emploi et d'un CV.
-Réponds UNIQUEMENT en JSON valide (pas de markdown), clés possibles selon outputs demandés: {outputs}.
-
-Schéma:
-{{
-  "checklist": {{
-    "job_title": "",
-    "company": null,
-    "keywords_found": [],
-    "keywords_missing": [],
-    "items": [{{"id":"","label":"","ok":true,"detail":""}}],
-    "summary": ""
-  }},
-  "letter": {{"title":"","body":""}},
-  "cv": {{
-    "templateId":"atlas",
-    "title":"",
-    "principal": false,
-    "identity": {{"firstName":"","lastName":"","title":"","email":"","phone":"","location":""}},
-    "summary":"",
-    "experiences":[],
-    "education":[],
-    "skills":[{{"id":"","name":"","level":70}}],
-    "languages":[],
-    "projects":[],
-    "certifications":[],
-    "interests":[]
-  }}
-}}
-
-Règles:
-- Français professionnel.
-- N'invente pas d'expériences ou diplômes absents du CV ; tu peux reformuler, réordonner, enrichir les puces avec des mots-clés de l'offre.
-- Pour letter.body : lettre complète, 180-280 mots max.
-- Pour cv : variante adaptée à l'offre (nouvelle version, pas un écrasement conceptuel).
-- checklist.items : 4 à 7 points actionnables.
-
-Offre:
-{offer[:8000]}
-
-CV (JSON):
-{snapshot}
-"""
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max(int(settings.gemini_max_output_tokens or 512), 2048),
-            "temperature": 0.45,
-            "responseMimeType": "application/json",
-        },
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        raw = "\n".join(texts).strip()
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if not match:
-            return None
-        parsed = json.loads(match.group(0))
-        return parsed if isinstance(parsed, dict) else None
-    except Exception:
-        return None
-
-
 @router.post("/generate")
 async def generate_candidature(
     body: GenerateRequest,
@@ -484,32 +297,17 @@ async def generate_candidature(
     cv = _load_cv(db, user, body.cv_id, body.cv_snapshot)
     offer = body.offer_text.strip()
 
-    gemini = await _gemini_generate(offer, cv, wanted)
-    result: dict[str, Any] = {"source": "gemini" if gemini else "local", "offer_title": _extract_job_title(offer)}
+    try:
+        result = await write_deliverables(
+            offer=offer,
+            cv=cv,
+            outputs=wanted,
+            local_checklist=lambda: _local_checklist(offer, cv),
+            job_title=_extract_job_title(offer),
+        )
+    except CandidatureAiError as exc:
+        raise HTTPException(status_code=503, detail={"message": str(exc)}) from exc
 
-    if "checklist" in wanted:
-        result["checklist"] = (gemini or {}).get("checklist") or _local_checklist(offer, cv)
-    if "letter" in wanted:
-        result["letter"] = (gemini or {}).get("letter") or _local_letter(offer, cv)
-    if "cv" in wanted:
-        adapted = (gemini or {}).get("cv") if gemini else None
-        if not isinstance(adapted, dict) or not adapted.get("summary"):
-            adapted = _local_cv_variant(offer, cv)
-        else:
-            # conserve identité réelle si le modèle a vidé les champs
-            identity = dict(cv.get("identity") or {})
-            model_id = adapted.get("identity") if isinstance(adapted.get("identity"), dict) else {}
-            for key in ("firstName", "lastName", "email", "phone", "location", "photo", "website", "github"):
-                if not model_id.get(key) and identity.get(key):
-                    model_id[key] = identity.get(key)
-            if not model_id.get("title"):
-                model_id["title"] = identity.get("title") or _extract_job_title(offer)
-            adapted["identity"] = model_id
-            adapted["templateId"] = adapted.get("templateId") or cv.get("templateId") or "atlas"
-            adapted["principal"] = False
-        result["cv"] = adapted
-
-    # Indiquer les capacités restantes pour l'UI
     result["capabilities"] = {
         "checklist": True,
         "cv": allows(plan, "candidature.generate"),

@@ -13,6 +13,7 @@ from app.core.limiter import limiter
 from app.modules.assistant.router import router as assistant_router
 from app.modules.auth.router import router as auth_router
 from app.modules.contact.router import router as contact_router
+from app.modules.convert.router import router as convert_router
 from app.modules.cv.router import router as cv_router
 from app.modules.health.router import router as health_router
 from app.modules.notifications.router import router as notifications_router
@@ -53,6 +54,7 @@ def create_app() -> FastAPI:
     api.include_router(notifications_router)
     api.include_router(assistant_router)
     api.include_router(contact_router)
+    api.include_router(convert_router)
     api.include_router(templates_router)
     api.include_router(plans_router)
     api.include_router(candidature_router)

@@ -2,13 +2,13 @@ import json
 import re
 from typing import Any, Literal, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.ai import ai_json, ai_text
 from app.core.deps import get_current_user, get_optional_user
 from app.core.limiter import limiter
 from app.modules.users.models import User
@@ -54,7 +54,7 @@ Ne invente pas de données personnelles. Si la question sort du CV, recentre pol
 
 CV_SYSTEM_PROMPT = """Tu es {name}, assistante vocale Nogalix pour remplir un CV.
 Réponds TOUJOURS en français, courte et claire (2-4 phrases).
-Tu guides l'utilisateur section par section : identité, accroche, expériences, formations, compétences, langues, projets, certifications.
+Tu guides l'utilisateur section par section : identité, accroche, expériences, formations, compétences, langues, projets, certifications, centres d'intérêt, références.
 N'invente JAMAIS de données personnelles absentes du message utilisateur.
 Quand l'utilisateur donne des infos, tu les structures dans un patch JSON.
 
@@ -72,6 +72,7 @@ Réponds UNIQUEMENT avec un objet JSON valide (pas de markdown) de la forme :
     "projects": [{{ "id": "", "name": "", "description": "", "url": "" }}],
     "certifications": [{{ "id": "", "name": "", "issuer": "", "year": "" }}],
     "interests": [{{ "id": "", "name": "" }}],
+    "references": [{{ "id": "", "name": "", "role": "", "company": "", "phone": "", "email": "" }}],
     "replaceLists": false
   }}
 }}
@@ -249,70 +250,17 @@ def _local_cv_turn(message: str, cv: Optional[dict[str, Any]]) -> tuple[str, dic
     return reply, patch
 
 
-def _parse_json_object(raw: str) -> Optional[dict[str, Any]]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-        return data if isinstance(data, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
 async def _gemini_reply(message: str, history: list[ChatMessage]) -> Optional[str]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
     contents = []
     for item in history[-8:]:
         role = "user" if item.role == "user" else "model"
         contents.append({"role": role, "parts": [{"text": item.content}]})
     contents.append({"role": "user", "parts": [{"text": message}]})
-
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
+    return await ai_text(
+        contents=contents,
+        system=SYSTEM_PROMPT.format(name=settings.assistant_name),
+        purpose="chat",
     )
-    body = {
-        "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT.format(name=settings.assistant_name)}]
-        },
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": settings.gemini_max_output_tokens,
-            "temperature": 0.6,
-        },
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [])
-        )
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        reply = "\n".join(texts).strip()
-        return reply or None
-    except Exception:
-        return None
 
 
 async def _gemini_cv_turn(
@@ -320,9 +268,6 @@ async def _gemini_cv_turn(
     history: list[ChatMessage],
     cv: Optional[dict[str, Any]],
 ) -> Optional[tuple[str, dict[str, Any]]]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
-
     snapshot = ""
     if cv:
         try:
@@ -337,6 +282,8 @@ async def _gemini_cv_turn(
                     "languages": cv.get("languages"),
                     "projects": cv.get("projects"),
                     "certifications": cv.get("certifications"),
+                    "interests": cv.get("interests"),
+                    "references": cv.get("references"),
                 },
                 ensure_ascii=False,
             )[:6000]
@@ -352,48 +299,18 @@ async def _gemini_cv_turn(
         user_blob = f"CV actuel (JSON):\n{snapshot}\n\nMessage utilisateur:\n{message}"
     contents.append({"role": "user", "parts": [{"text": user_blob}]})
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
+    parsed = await ai_json(
+        contents=contents,
+        system=CV_SYSTEM_PROMPT.format(name=settings.assistant_name),
+        purpose="cv_chat",
     )
-    body = {
-        "systemInstruction": {
-            "parts": [{"text": CV_SYSTEM_PROMPT.format(name=settings.assistant_name)}]
-        },
-        "contents": contents,
-        "generationConfig": {
-            "maxOutputTokens": max(settings.gemini_max_output_tokens, 1024),
-            "temperature": 0.4,
-            "responseMimeType": "application/json",
-        },
-    }
-    try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [])
-        )
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        raw = "\n".join(texts).strip()
-        parsed = _parse_json_object(raw)
-        if not parsed:
-            return None
-        reply = str(parsed.get("reply") or "").strip()
-        patch = parsed.get("patch") if isinstance(parsed.get("patch"), dict) else {}
-        if not reply:
-            reply = "C'est noté. Que souhaitez-vous ajouter ensuite ?"
-        return reply, patch
-    except Exception:
+    if not parsed:
         return None
+    reply = str(parsed.get("reply") or "").strip()
+    patch = parsed.get("patch") if isinstance(parsed.get("patch"), dict) else {}
+    if not reply:
+        reply = "C'est noté. Que souhaitez-vous ajouter ensuite ?"
+    return reply, patch
 
 
 @router.post("/chat")

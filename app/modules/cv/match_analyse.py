@@ -1,10 +1,7 @@
-import json
 import re
 from typing import Any, Optional
 
-import httpx
-
-from app.core.config import settings
+from app.core.ai import ai_json
 
 
 def _tokenize(text: str) -> list[str]:
@@ -167,27 +164,6 @@ def local_match_analysis(
     }
 
 
-def _parse_json_object(raw: str) -> Optional[dict[str, Any]]:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        data = json.loads(text)
-        if isinstance(data, dict):
-            return data
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-        return data if isinstance(data, dict) else None
-    except json.JSONDecodeError:
-        return None
-
-
 async def gemini_match_analysis(
     *,
     cv_label: str,
@@ -195,9 +171,6 @@ async def gemini_match_analysis(
     job_offer: str,
     cv_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
-
     prompt = f"""Tu es une experte recrutement et ATS pour Nogalix.
 L'utilisateur veut savoir :
 1) si son CV correspond à cette offre d'emploi (l'offre sert uniquement de référence, on ne la modifie jamais) ;
@@ -233,32 +206,8 @@ CV ({cv_label}) :
 {cv_text[:9000]}
 """
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max(int(settings.gemini_max_output_tokens or 512), 1536),
-            "temperature": 0.3,
-            "responseMimeType": "application/json",
-        },
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=45.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        parsed = _parse_json_object("\n".join(texts).strip())
+        parsed = await ai_json(prompt, purpose="match")
         if not parsed:
             return None
 

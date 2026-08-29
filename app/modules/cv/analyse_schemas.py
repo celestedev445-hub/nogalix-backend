@@ -82,3 +82,30 @@ class CvAnalyseResponse(BaseModel):
     suggestions: list[AnalysisSuggestion] = Field(default_factory=list)
     categories: list[AnalysisCategory] = Field(default_factory=list)
     cvId: Optional[str] = None
+
+
+class CvImportParseRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    text: str = Field(min_length=20, max_length=40000)
+    fileName: Optional[str] = Field(default=None, max_length=255)
+    requireAi: bool = False
+
+
+class CvImportParseResponse(BaseModel):
+    payload: dict[str, Any]
+    source: Literal["ai", "local"] = "local"
+
+
+class CvTranslateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    languageCode: str = Field(min_length=2, max_length=16)
+    languageName: str = Field(min_length=2, max_length=80)
+    cv: dict[str, Any]
+
+
+class CvTranslateResponse(BaseModel):
+    payload: dict[str, Any]
+    source: Literal["ai"] = "ai"
+    languageName: str = ""

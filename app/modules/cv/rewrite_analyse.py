@@ -3,11 +3,9 @@ import re
 import secrets
 from typing import Any, Optional
 
-import httpx
-
-from app.core.config import settings
+from app.core.ai import ai_json
 from app.modules.cv.import_parse import finalize_import_payload, parse_imported_cv
-from app.modules.cv.match_analyse import _extract_job_title, _parse_json_object
+from app.modules.cv.match_analyse import _extract_job_title
 
 IMPORT_ORIGINAL_TEMPLATE_ID = "import-original"
 
@@ -139,6 +137,7 @@ def local_rewrite_cv(
         "projects": cv.get("projects") or [],
         "certifications": cv.get("certifications") or [],
         "interests": cv.get("interests") or [],
+        "references": cv.get("references") or [],
     }
     return _apply_rewrite_actions(rewritten, actions, title)
 
@@ -152,9 +151,6 @@ async def gemini_rewrite_cv(
     actions: list[dict[str, str]],
     job_title: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    if not settings.gemini_enabled or not settings.gemini_api_key:
-        return None
-
     actions_json = json.dumps(actions, ensure_ascii=False)[:3000]
     source = json.dumps(cv, ensure_ascii=False)[:7000] if cv.get("experiences") or cv.get("skills") else cv_text[:7000]
     title = job_title or _extract_job_title(job_offer)
@@ -183,7 +179,8 @@ Réponds UNIQUEMENT en JSON valide :
   "languages": [{{"id":"","name":"","level":""}}],
   "projects": [],
   "certifications": [],
-  "interests": []
+  "interests": [],
+  "references": []
 }}
 
 Règles :
@@ -200,40 +197,13 @@ CV source :
 {source}
 """
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{settings.gemini_model}:generateContent"
-    )
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max(int(settings.gemini_max_output_tokens or 512), 2048),
-            "temperature": 0.35,
-            "responseMimeType": "application/json",
-        },
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                url,
-                params={"key": settings.gemini_api_key},
-                json=body,
-            )
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-        texts = [p.get("text", "") for p in parts if p.get("text")]
-        parsed = _parse_json_object("\n".join(texts).strip())
-        if not parsed:
-            return None
-        parsed["templateId"] = template_id
-        parsed["principal"] = False
-        parsed["editorStatus"] = "draft"
-        return parsed
-    except Exception:
+    parsed = await ai_json(prompt, purpose="rewrite")
+    if not parsed:
         return None
+    parsed["templateId"] = template_id
+    parsed["principal"] = False
+    parsed["editorStatus"] = "draft"
+    return parsed
 
 
 async def build_rewrite_cv(

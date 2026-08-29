@@ -47,12 +47,17 @@ class Settings(BaseSettings):
     contact_to_email: str = "contact@nogalix.com"
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_enabled: bool = False
     gemini_max_output_tokens: int = 512
 
     assistant_name: str = "Noga"
     admin_emails: str = ""
+
+    onlyoffice_url: str = ""
+    onlyoffice_jwt_secret: str = ""
+    app_internal_url: str = "http://host.docker.internal:8010"
+    import_access_secret: str = ""
 
     @property
     def database_url(self) -> str:
@@ -82,7 +87,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # reload picks up .env changes on uvicorn --reload
 
 
 settings = get_settings()

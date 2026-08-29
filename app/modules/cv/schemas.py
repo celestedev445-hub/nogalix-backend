@@ -46,6 +46,7 @@ class SkillItem(BaseModel):
     id: str
     name: str = ""
     level: int = 0
+    icon: Optional[str] = None
 
 
 class LanguageItem(BaseModel):
@@ -79,6 +80,18 @@ class InterestItem(BaseModel):
 
     id: str
     name: str = ""
+    icon: Optional[str] = None
+
+
+class ReferenceItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    name: str = ""
+    role: str = ""
+    company: str = ""
+    phone: Optional[str] = None
+    email: Optional[str] = None
 
 
 class CvImportSource(BaseModel):
@@ -110,6 +123,7 @@ class CvPayload(BaseModel):
     projects: list[ProjectItem] = Field(default_factory=list)
     certifications: list[CertificationItem] = Field(default_factory=list)
     interests: Optional[list[InterestItem]] = None
+    references: Optional[list[ReferenceItem]] = None
     importSource: Optional[CvImportSource] = None
 
 
