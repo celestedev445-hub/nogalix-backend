@@ -20,6 +20,7 @@ from app.modules.notifications.router import router as notifications_router
 from app.modules.profile.router import router as profile_router
 from app.modules.plans.router import router as plans_router
 from app.modules.candidature.router import router as candidature_router
+from app.modules.support.router import router as support_router
 from app.modules.templates.router import router as templates_router
 
 
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
     api.include_router(templates_router)
     api.include_router(plans_router)
     api.include_router(candidature_router)
+    api.include_router(support_router)
     app.include_router(api)
 
     uploads = Path(__file__).resolve().parent.parent / "storage" / "uploads"

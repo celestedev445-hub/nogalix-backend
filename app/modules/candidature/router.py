@@ -283,16 +283,19 @@ async def generate_candidature(
             db,
             user,
             "candidature.generate",
-            "L'adaptation de CV à une offre est incluse à partir du plan Pro.",
+            "L'adaptation de CV à une offre consomme une action IA de votre plan.",
         )
     if "letter" in wanted:
         ensure_capability(
             db,
             user,
             "documents.letters",
-            "Les lettres de motivation sont incluses à partir du plan Pro.",
+            "Les lettres de motivation consomment une action IA de votre plan.",
         )
-    # checklist : gratuit ; si seul livrable payant sans droit déjà filtré ci-dessus
+    if wanted != ["checklist"]:
+        from app.modules.plans.capability import ensure_ai_trial
+
+        ensure_ai_trial(db, user)
 
     cv = _load_cv(db, user, body.cv_id, body.cv_snapshot)
     offer = body.offer_text.strip()

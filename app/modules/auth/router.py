@@ -84,7 +84,7 @@ def me(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     plan = get_user_plan(db, user)
     payload = user.to_auth_dict()
     payload["plan"] = plan_summary(plan)
-    payload["capabilities"] = capabilities_payload(plan)
+    payload["capabilities"] = capabilities_payload(plan, user)
     return {"data": payload, "user": payload, **payload}
 
 

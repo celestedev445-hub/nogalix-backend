@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.modules.plans.catalog import (
+    AI_TRIAL_KEYS,
     CAPABILITY_LABELS,
     UNLIMITED,
     capabilities_for_tier,
     template_is_premium,
     tier_for_level,
+    tier_for_slug,
 )
 from app.modules.plans.models import Plan, PlanLimitation
 from app.modules.users.models import CurriculumVitae, User
@@ -41,7 +44,6 @@ def _limitation_map(plan: Optional[Plan]) -> dict[str, PlanLimitation]:
 def get_count_limit(plan: Optional[Plan], key: str, default: int = 0) -> int:
     row = _limitation_map(plan).get(key)
     if not row:
-        # Fallback catalogue selon level
         if plan:
             for cap in capabilities_for_tier(tier_for_level(plan.level)):
                 if cap["key"] == key and cap["limitation_type"] == "count":
@@ -65,7 +67,43 @@ def allows(plan: Optional[Plan], key: str, default: bool = False) -> bool:
     return int(row.value) != 0
 
 
-def capabilities_payload(plan: Optional[Plan]) -> dict:
+def _trial_period_for(plan: Optional[Plan]) -> str:
+    slug = (plan.slug if plan else "gratuit") or "gratuit"
+    if tier_for_slug(slug) == "gratuit":
+        return "lifetime"
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def sync_ai_trial_period(user: User, plan: Optional[Plan]) -> None:
+    period = _trial_period_for(plan)
+    current = getattr(user, "ai_trials_period", None) or ""
+    if current != period:
+        user.ai_trials_period = period
+        user.ai_trials_used = 0
+
+
+def ai_trial_usage(user: User, plan: Optional[Plan]) -> tuple[int, int, str, bool]:
+    """used, remaining, period, unlimited."""
+    limit = get_count_limit(plan, "ai.trials", default=3)
+    if limit == UNLIMITED:
+        return 0, UNLIMITED, _trial_period_for(plan), True
+    sync_ai_trial_period(user, plan)
+    used = int(getattr(user, "ai_trials_used", 0) or 0)
+    remaining = max(0, limit - used)
+    return used, remaining, _trial_period_for(plan), False
+
+
+def capabilities_payload(plan: Optional[Plan], user: Optional[User] = None) -> dict:
+    used = 0
+    remaining = 0
+    unlimited_trials = False
+    period = _trial_period_for(plan)
+    if user is not None:
+        used, remaining, period, unlimited_trials = ai_trial_usage(user, plan)
+    elif get_count_limit(plan, "ai.trials", default=3) == UNLIMITED:
+        unlimited_trials = True
+        remaining = UNLIMITED
+
     result: dict[str, dict] = {}
     for key, label in CAPABILITY_LABELS.items():
         row = _limitation_map(plan).get(key)
@@ -73,7 +111,6 @@ def capabilities_payload(plan: Optional[Plan]) -> dict:
             lim_type = row.limitation_type
             value = int(row.value)
         else:
-            # defaults from tier
             value = 0
             lim_type = "boolean"
             if plan:
@@ -83,13 +120,21 @@ def capabilities_payload(plan: Optional[Plan]) -> dict:
                         value = int(cap["value"])
                         break
         allowed = value > 0 if lim_type == "boolean" else value == UNLIMITED or value > 0
-        result[key] = {
+        if key in AI_TRIAL_KEYS and allowed and user is not None and not unlimited_trials:
+            allowed = remaining > 0
+        entry = {
             "label": label,
             "type": lim_type,
             "value": value,
             "allowed": allowed,
             "unlimited": lim_type == "count" and value == UNLIMITED,
         }
+        if key == "ai.trials":
+            entry["used"] = 0 if unlimited_trials else used
+            entry["remaining"] = remaining if not unlimited_trials else UNLIMITED
+            entry["period"] = period
+            entry["allowed"] = unlimited_trials or remaining > 0
+        result[key] = entry
     return result
 
 
@@ -152,3 +197,33 @@ def ensure_capability(db: Session, user: User, key: str, message: str) -> None:
             "plan": plan_summary(plan),
         },
     )
+
+
+def ensure_ai_trial(db: Session, user: User) -> None:
+    plan = get_user_plan(db, user)
+    used, remaining, _period, unlimited = ai_trial_usage(user, plan)
+    if unlimited:
+        return
+    if remaining <= 0:
+        limit = get_count_limit(plan, "ai.trials", default=3)
+        monthly = _trial_period_for(plan) != "lifetime"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "message": (
+                    f"Vous avez utilisé vos {limit} action{'s' if limit > 1 else ''} IA"
+                    f"{' de ce mois' if monthly else ''}. Passez à un plan supérieur pour continuer."
+                ),
+                "code": "plan_limit_ai_trials",
+                "capability": "ai.trials",
+                "limit": limit,
+                "used": used,
+                "remaining": 0,
+                "plan": plan_summary(plan),
+            },
+        )
+    user.ai_trials_used = used + 1
+    user.ai_trials_period = _trial_period_for(plan)
+    db.add(user)
+    db.commit()
+    db.refresh(user)

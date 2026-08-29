@@ -9,15 +9,26 @@ UNLIMITED = -1
 
 CAPABILITY_LABELS: dict[str, str] = {
     "cv.max": "Nombre de CV",
+    "ai.trials": "Actions IA",
     "templates.premium": "Modèles premium",
-    "analyse.advanced": "Analyse IA avancée",
+    "analyse.advanced": "Analyse IA",
     "assistant.voice": "Édition CV à la voix",
     "documents.letters": "Lettres de motivation",
     "candidature.generate": "Candidature ciblée (CV adapté)",
-    "emploi.search": "Recherche d'offres IA",
+    "emploi.search": "Recherche d'offres",
     "export.word": "Export Word",
     "support.priority": "Support prioritaire",
 }
+
+# Fonctionnalités IA partagées dans le quota ai.trials
+AI_TRIAL_KEYS = frozenset(
+    {
+        "analyse.advanced",
+        "assistant.voice",
+        "documents.letters",
+        "candidature.generate",
+    }
+)
 
 TIER_GRATUIT = "gratuit"
 TIER_PRO = "pro"
@@ -37,7 +48,7 @@ def default_plans() -> list[dict[str, Any]]:
         {
             "slug": "gratuit",
             "name": "Gratuit",
-            "description": "Pour commencer votre CV professionnel sans carte bancaire.",
+            "description": "Pour commencer : 1 CV, conversion et 3 essais IA, sans carte bancaire.",
             "price": 0,
             "duration_months": 1,
             "is_active": True,
@@ -49,7 +60,7 @@ def default_plans() -> list[dict[str, Any]]:
         {
             "slug": "pro",
             "name": "Pro",
-            "description": "Pour aller plus loin : modèles premium, voix et analyses avancées.",
+            "description": "Pour travailler vraiment : CV illimités, tous les modèles et 30 actions IA par mois.",
             "price": 4900,
             "duration_months": 1,
             "is_active": True,
@@ -61,7 +72,7 @@ def default_plans() -> list[dict[str, Any]]:
         {
             "slug": "premium",
             "name": "Premium",
-            "description": "Pour se démarquer : emploi IA, support prioritaire et quotas élevés.",
+            "description": "Pour se démarquer : IA illimitée, offres d'emploi et support prioritaire.",
             "price": 9900,
             "duration_months": 1,
             "is_active": True,
@@ -96,35 +107,38 @@ def capabilities_for_tier(tier: str) -> list[dict[str, Any]]:
     catalogs = {
         TIER_GRATUIT: {
             "cv.max": ("count", 1, "1 CV maximum"),
+            "ai.trials": ("count", 3, "3 essais IA (analyse, candidature, voix, traduction, assistant)"),
             "templates.premium": ("boolean", 0, "Modèles standards uniquement"),
-            "analyse.advanced": ("boolean", 0, "Analyse IA basique"),
-            "assistant.voice": ("boolean", 0, "Édition vocale non incluse"),
-            "documents.letters": ("boolean", 0, "Lettres non incluses"),
-            "candidature.generate": ("boolean", 0, "Checklist candidature uniquement"),
-            "emploi.search": ("boolean", 0, "Offres d'emploi non incluses"),
-            "export.word": ("boolean", 0, "Export PDF (impression) uniquement"),
+            "analyse.advanced": ("boolean", 1, "Analyse IA dans le quota d'essais"),
+            "assistant.voice": ("boolean", 1, "Voix et assistant dans le quota d'essais"),
+            "documents.letters": ("boolean", 1, "Lettres dans le quota d'essais"),
+            "candidature.generate": ("boolean", 1, "CV adapté dans le quota d'essais"),
+            "emploi.search": ("boolean", 0, "Offres d'emploi réservées au Premium"),
+            "export.word": ("boolean", 0, "Export PDF uniquement"),
             "support.priority": ("boolean", 0, "Support standard"),
         },
         TIER_PRO: {
             "cv.max": ("count", UNLIMITED, "CV illimités"),
+            "ai.trials": ("count", 30, "30 actions IA par mois"),
             "templates.premium": ("boolean", 1, "Tous les modèles premium"),
-            "analyse.advanced": ("boolean", 1, "Analyse IA avancée"),
+            "analyse.advanced": ("boolean", 1, "Analyse IA"),
             "assistant.voice": ("boolean", 1, "Édition CV à la voix"),
             "documents.letters": ("boolean", 1, "Lettres de motivation"),
             "candidature.generate": ("boolean", 1, "CV adapté à une offre"),
             "emploi.search": ("boolean", 0, "Offres d'emploi réservées au Premium"),
-            "export.word": ("boolean", 1, "Export PDF & Word"),
+            "export.word": ("boolean", 1, "Export PDF et Word"),
             "support.priority": ("boolean", 0, "Support standard"),
         },
         TIER_PREMIUM: {
             "cv.max": ("count", UNLIMITED, "CV illimités"),
+            "ai.trials": ("count", UNLIMITED, "Actions IA illimitées"),
             "templates.premium": ("boolean", 1, "Tous les modèles premium"),
-            "analyse.advanced": ("boolean", 1, "Analyse ATS avancée"),
+            "analyse.advanced": ("boolean", 1, "Analyse ATS"),
             "assistant.voice": ("boolean", 1, "Édition CV à la voix"),
             "documents.letters": ("boolean", 1, "Lettres de motivation"),
             "candidature.generate": ("boolean", 1, "CV adapté à une offre"),
-            "emploi.search": ("boolean", 1, "Recherche d'offres IA"),
-            "export.word": ("boolean", 1, "Export PDF & Word"),
+            "emploi.search": ("boolean", 1, "Recherche d'offres"),
+            "export.word": ("boolean", 1, "Export PDF et Word"),
             "support.priority": ("boolean", 1, "Support prioritaire"),
         },
     }
@@ -147,23 +161,24 @@ def features_for_tier(tier: str) -> list[dict[str, Any]]:
         TIER_GRATUIT: [
             ("1 CV", "Créez et éditez un CV principal"),
             ("Modèles standards", "Accès aux modèles non premium"),
-            ("Analyse IA basique", "Score et pistes d'amélioration"),
-            ("Checklist candidature", "À partir d'une offre collée"),
-            ("Export PDF", "Via la boîte d'impression du navigateur"),
+            ("Convertir PDF et Word", "Conversion publique, sans compte"),
+            ("3 essais IA", "Analyse, candidature, voix, traduction et assistant"),
+            ("Checklist candidature", "À partir d'une offre collée, sans quota"),
+            ("Export PDF", "Impression et export depuis l'éditeur"),
         ],
         TIER_PRO: [
             ("CV illimités", "Créez autant de versions que nécessaire"),
-            ("Tous les modèles premium", "Accès complet à la galerie"),
-            ("Analyse IA avancée", "Audit ATS plus précis"),
-            ("Candidature ciblée", "CV adapté + lettre depuis une offre"),
+            ("Tous les modèles", "Galerie complète, y compris premium"),
+            ("Convertir PDF et Word", "Même conversion que l'éditeur"),
+            ("30 actions IA par mois", "Analyse, candidature, voix, traduction, assistant"),
+            ("Candidature ciblée", "CV adapté et lettre depuis une offre"),
             ("Édition à la voix", "Complétez votre CV en dictant"),
-            ("Lettres de motivation", "Documents liés à vos candidatures"),
-            ("Export PDF & Word", "Formats adaptés aux recruteurs"),
+            ("Export PDF et Word", "Formats adaptés aux recruteurs"),
         ],
         TIER_PREMIUM: [
-            ("Tout dans Pro", "Toutes les capacités du plan Pro"),
-            ("Offres d'emploi IA", "Matching offres selon votre CV"),
-            ("Optimisation ATS avancée", "Recommandations ciblées offre par offre"),
+            ("Tout dans Pro", "CV illimités, modèles et exports"),
+            ("IA illimitée", "Plus de plafond sur les actions IA"),
+            ("Offres d'emploi", "Matching des postes selon votre CV"),
             ("Support prioritaire", "Réponses prioritaires de l'équipe"),
         ],
     }

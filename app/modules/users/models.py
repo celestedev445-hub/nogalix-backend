@@ -42,6 +42,8 @@ class User(Base):
     notify_jobs: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_analysis: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     plan_id: Mapped[Optional[int]] = mapped_column(ForeignKey("plans.id", ondelete="SET NULL"), nullable=True, index=True)
+    ai_trials_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ai_trials_period: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False

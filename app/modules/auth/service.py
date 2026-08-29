@@ -53,7 +53,9 @@ def issue_token(db: Session, user: User, name: str = "authToken") -> str:
 
 def auth_payload(db: Session, user: User, token: str, message: str) -> dict:
     from app.modules.plans.capability import capabilities_payload, get_user_plan, plan_summary
-    from app.modules.plans.seed import get_default_free_plan
+    from app.modules.plans.seed import ensure_ai_trial_columns, get_default_free_plan
+
+    ensure_ai_trial_columns(db)
 
     dirty = False
     if not user.plan_id:
@@ -71,7 +73,7 @@ def auth_payload(db: Session, user: User, token: str, message: str) -> dict:
     plan = get_user_plan(db, user)
     user_dict = user.to_auth_dict()
     user_dict["plan"] = plan_summary(plan)
-    user_dict["capabilities"] = capabilities_payload(plan)
+    user_dict["capabilities"] = capabilities_payload(plan, user)
     return {
         "message": message,
         "token": token,
@@ -82,7 +84,7 @@ def auth_payload(db: Session, user: User, token: str, message: str) -> dict:
             "user": user_dict,
         },
         "plan": plan_summary(plan),
-        "capabilities": capabilities_payload(plan),
+        "capabilities": capabilities_payload(plan, user),
     }
 
 

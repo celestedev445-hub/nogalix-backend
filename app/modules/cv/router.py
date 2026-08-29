@@ -77,8 +77,12 @@ def destroy(cv_id: str, db: Session = Depends(get_db), user: User = Depends(get_
 @router.post("/translate", response_model=CvTranslateResponse)
 async def translate_cv_content(
     body: CvTranslateRequest,
-    _user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    from app.modules.plans.capability import ensure_ai_trial
+
+    ensure_ai_trial(db, user)
     try:
         return await translate_cv(
             cv=body.cv,
@@ -95,6 +99,9 @@ async def analyse_rewrite(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    from app.modules.plans.capability import ensure_ai_trial
+
+    ensure_ai_trial(db, user)
     return await cv_service.rewrite_from_analyse(db, user, body)
 
 
@@ -104,6 +111,9 @@ async def analyse_match(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    from app.modules.plans.capability import ensure_ai_trial
+
+    ensure_ai_trial(db, user)
     return await cv_service.match_analyse(db, user, body)
 
 
@@ -165,6 +175,7 @@ async def analyse_upload_multipart(
 @router.post("/import/parse", response_model=CvImportParseResponse)
 async def import_parse(
     body: CvImportParseRequest,
+    db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     text = (body.text or "").strip()
@@ -173,6 +184,10 @@ async def import_parse(
             status_code=422,
             detail={"message": "Pas assez de texte pour pré-remplir le modèle."},
         )
+    if body.requireAi:
+        from app.modules.plans.capability import ensure_ai_trial
+
+        ensure_ai_trial(db, user)
     try:
         return await parse_imported_cv(text, body.fileName or "", require_ai=body.requireAi)
     except ImportedCvAiError as exc:

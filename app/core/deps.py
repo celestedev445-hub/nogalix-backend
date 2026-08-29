@@ -67,27 +67,33 @@ def get_optional_user(
         return None
 
 
-def require_admin(
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> User:
-    if user.is_admin():
-        return user
-
-    # Bootstrap : emails dans ADMIN_EMAILS → promotion role=admin (persistée).
-    allowlist = {
+def _admin_allowlist() -> set[str]:
+    return {
         item.strip().lower()
         for item in (settings.admin_emails or "").split(",")
         if item.strip()
     }
+
+
+def user_is_admin(user: User, db: Session) -> bool:
+    if user.is_admin():
+        return True
     email = (user.email or "").strip().lower()
-    if email and email in allowlist:
+    if email and email in _admin_allowlist():
         user.role = "admin"
         db.add(user)
         db.commit()
         db.refresh(user)
-        return user
+        return True
+    return False
 
+
+def require_admin(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    if user_is_admin(user, db):
+        return user
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={"message": "Accès administrateur requis.", "code": "admin_required"},

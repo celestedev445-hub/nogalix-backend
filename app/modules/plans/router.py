@@ -57,11 +57,14 @@ def capability_catalog(_: User = Depends(require_admin)):
 @router.get("/plans/me")
 def my_plan(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     ensure_default_plans(db)
+    from app.modules.plans.seed import ensure_ai_trial_columns
+
+    ensure_ai_trial_columns(db)
     plan = caps.get_user_plan(db, user)
     return {
         "data": {
             "plan": caps.plan_summary(plan),
-            "capabilities": caps.capabilities_payload(plan),
+            "capabilities": caps.capabilities_payload(plan, user),
         }
     }
 

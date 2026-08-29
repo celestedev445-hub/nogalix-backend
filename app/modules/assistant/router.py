@@ -318,10 +318,16 @@ async def _gemini_cv_turn(
 async def chat(
     request: Request,
     body: ChatRequest,
+    db: Session = Depends(get_db),
     user: Optional[User] = Depends(get_optional_user),
 ):
     if body.zone in {"app", "cv"} and user is None:
         raise HTTPException(status_code=401, detail={"message": "Non authentifié."})
+
+    if body.zone in {"app", "cv"} and user is not None:
+        from app.modules.plans.capability import ensure_ai_trial
+
+        ensure_ai_trial(db, user)
 
     if body.zone == "cv":
         gemini = await _gemini_cv_turn(body.message, body.history, body.cv)
