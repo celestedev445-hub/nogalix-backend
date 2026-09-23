@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     app_internal_url: str = "http://host.docker.internal:8010"
     import_access_secret: str = ""
 
+    adzuna_app_id: str = ""
+    adzuna_app_key: str = ""
+    adzuna_country: str = "fr"
+
     @property
     def database_url(self) -> str:
         password = self.db_password or ""

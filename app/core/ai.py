@@ -214,11 +214,22 @@ async def ai_complete(
                 }
                 if system_instruction:
                     body["systemInstruction"] = system_instruction
-                response = await client.post(
-                    AI_ENDPOINT.format(model=model),
-                    headers={"x-goog-api-key": settings.gemini_api_key},
-                    json=body,
-                )
+                try:
+                    response = await client.post(
+                        AI_ENDPOINT.format(model=model),
+                        headers={"x-goog-api-key": settings.gemini_api_key},
+                        json=body,
+                    )
+                except httpx.TimeoutException:
+                    # Un modèle saturé peut rester muet au lieu de renvoyer un 503 :
+                    # on ne perd pas tout l'appel pour ça, on tente le modèle suivant.
+                    last_error = "timeout"
+                    if model not in transient:
+                        transient.append(model)
+                    logger.warning(
+                        "IA timeout sur %s (%s), essai du modèle suivant.", model, purpose
+                    )
+                    break
                 if response.status_code == 200:
                     if model != settings.gemini_model:
                         logger.info("IA basculée sur %s (%s)", model, purpose)

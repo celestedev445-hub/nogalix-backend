@@ -16,6 +16,7 @@ from app.modules.contact.router import router as contact_router
 from app.modules.convert.router import router as convert_router
 from app.modules.cv.router import router as cv_router
 from app.modules.health.router import router as health_router
+from app.modules.jobs.router import router as jobs_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.profile.router import router as profile_router
 from app.modules.plans.router import router as plans_router
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     api.include_router(templates_router)
     api.include_router(plans_router)
     api.include_router(candidature_router)
+    api.include_router(jobs_router)
     api.include_router(support_router)
     app.include_router(api)
 
