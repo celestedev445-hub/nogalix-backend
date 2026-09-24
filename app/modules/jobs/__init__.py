@@ -1,1 +1,1 @@
-"""Recherche d'offres d'emploi (Adzuna)."""
+"""Recherche d'offres d'emploi (Adzuna, JSearch)."""

@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     adzuna_app_key: str = ""
     adzuna_country: str = "fr"
 
+    rapidapi_key: str = ""
+    jsearch_host: str = "jsearch.p.rapidapi.com"
+    jsearch_country: str = "fr"
+
     @property
     def database_url(self) -> str:
         password = self.db_password or ""
